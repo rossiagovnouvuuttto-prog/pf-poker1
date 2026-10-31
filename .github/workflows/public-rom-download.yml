@@ -1,0 +1,58 @@
+name: Publish experimental Android 9 ROM without requiring GitHub login
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/public-rom-download.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Fetch previously built ROM from GitHub Actions
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 3 --retry-delay 3 \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/13053760591/zip" \
+            -o rom-artifact.zip
+          unzip -tq rom-artifact.zip
+          unzip -j rom-artifact.zip 'vine-rom-9-redroid-unverified.vrom' -d .
+          test -s vine-rom-9-redroid-unverified.vrom
+          ls -lh vine-rom-9-redroid-unverified.vrom
+
+      - name: Create public experimental download release
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat >release-notes.md <<'EOF'
+          Experimental ARM64 Android 9 Pie (API 28) root filesystem exported from
+          publicly available Redroid, packaged as .vrom for our VineOS fork.
+
+          THIS IS **NOT** A FUNCTIONAL VIRTUAL ANDROID 9 WITH ROOT.
+          - No tested guest boot on Redmi Pad 2 Pro / HyperOS 3.
+          - Magisk/root is NOT installed or tested.
+          - Not compatible with normal phone flashing tools.
+          - Standoff 2 is NOT tested and is unlikely to run until the
+            container runtime and GPU/graphics paths are implemented.
+
+          Source/build: GitHub Actions ROM job 41230049035.
+          EOF
+          gh release create android9-redroid-experimental-2026-10-31 \
+            ./vine-rom-9-redroid-unverified.vrom \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Android 9 experimental ROM for VineOS (NOT boot tested)" \
+            --notes-file release-notes.md \
+            --prerelease
