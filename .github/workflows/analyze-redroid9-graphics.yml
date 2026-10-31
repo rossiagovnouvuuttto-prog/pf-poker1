@@ -1,0 +1,41 @@
+name: Diagnose Android 9 Redroid GUI blockers from real QEMU serial log
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/analyze-redroid9-graphics.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Download original real Android 9 QEMU early-boot log
+        uses: actions/download-artifact@v4
+        with:
+          name: redroid9-virtio-qemu-early-boot-log
+          run-id: 41239685278
+          github-token: ${{ github.token }}
+          path: logs
+      - name: Inspect boot completion and missing graphics dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          LOG="logs/serial.log"
+          test -s "$LOG"
+          echo "=== Android 9 init stage verification ==="
+          grep -E 'init (first|second) stage started|ANDROID9_STAGE0_' "$LOG" | head -35 || true
+          echo "=== Graphics stack and binder/ashmem ==="
+          grep -iE 'SurfaceFlinger|hwcomposer|HWC2|gralloc|EGL|compositor|binder|ashmem|ion|drm|zygote|system_server|boot_completed|display' "$LOG" | tail -120 || true
+          echo "=== Native service restarts and failures ==="
+          grep -Ei "Service .*(received signal|exited with status)|failed to|abort|permission denied|fatal|cannot find|not found" "$LOG" | tail -120 || true
+          echo "=== Status ==="
+          grep -Eq 'sys.boot_completed=1|boot_completed.*1' "$LOG" &&
+            echo "Boot-completion marker present" ||
+            echo "NO_ANDROID9_GUI_OR_BOOT_COMPLETE_VERIFIED"
