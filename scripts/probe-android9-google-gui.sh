@@ -25,9 +25,9 @@ scripts/20-build-ramdisk.sh
 # Start the real Google ARM64 Android9 emulator under software TCG.
 CORES=1 MEM=4096 scripts/30-launch.sh
 sleep 8
-log "Waiting for adb, systemReady, and (ideally) graphical services"
+log "Waiting for adb and systemReady (bounded to avoid an indefinitely hung test)"
 set +e
-timeout --signal=TERM --kill-after=5s 35m scripts/40-bringup.sh \
+timeout --signal=TERM --kill-after=5s 15m scripts/40-bringup.sh \
     >build/gui-check/bringup-host.log 2>&1
 bringup_rc=$?
 set -e
@@ -55,9 +55,20 @@ for p in \
    guest "$p" | tee -a build/gui-check/status.txt
 done
 
-log "Attempt to wake the guest display and capture an actual Android9 frame"
+log "Bring up the REAL Android 9 HOME activity, not just any nonblack frame"
+# The upstream bring-up turns the screen off to preserve TCG throughput.
+# Under QEMU software rendering this can leave a valid Android framework
+# drawing nothing. Enable the display, explicitly request HOME, then give
+# SurfaceFlinger/Launcher time to render.
+guest "settings put global window_animation_scale 0"
+guest "settings put global transition_animation_scale 0"
+guest "settings put global animator_duration_scale 0"
 guest "input keyevent 224"
-sleep 10
+guest "input keyevent 3"
+guest "am start -a android.intent.action.MAIN -c android.intent.category.HOME"
+log "Waiting for SurfaceFlinger and the home activity to draw"
+sleep 60
+
 # Pipe binary bytes through adb exec-out, not shell CRLF-transformed output.
 set +e
 timeout 90 "$ADB" -s "$SERIAL" exec-out screencap -p \
