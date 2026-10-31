@@ -22,8 +22,36 @@ scripts/00-setup.sh
 scripts/10-patch-image.sh
 scripts/20-build-ramdisk.sh
 
+# Official Android Emulator supports '-selinux permissive', which adds the
+# required androidboot.selinux=permissive boot setting. The previous test
+# unconditionally re-entered SELinux enforcing when the vendor policy loaded
+# and failed to label /init, rebooting straight into bootloader. The upstream
+# initwrap's early 'setenforce 0' runs before the SELinux policy is loaded, so
+# it cannot prevent that first-stage transition. This is a test-only guest
+# permission setting, never a host ROOT change or production default.
+python3 - <<'PY_BOOT'
+from pathlib import Path
+p = Path('scripts/30-launch.sh')
+src = p.read_text()
+old = '-no-metrics -accel off -gpu swiftshader_indirect'
+if src.count(old) != 1:
+    raise SystemExit('Pinned emulator launch flags changed; refusing unsafe patch')
+p.write_text(src.replace(old,
+    '-no-metrics -selinux permissive -accel off -gpu swiftshader_indirect'))
+print('Enabled diagnostic Android9 guest SELinux permissive boot')
+PY_BOOT
+
 # Start the real Google ARM64 Android9 emulator under software TCG.
 CORES=1 MEM=4096 scripts/30-launch.sh
+# Check early boot before spending 15+ minutes waiting for ADB that can never
+# connect if Android init rebooted due to SELinux/restorecon.
+sleep 15
+if grep -Eq 'restorecon failed of /init|Reboot failed -- System halted' build/emu.log; then
+    echo "EARLY_BOOT_FAILED_AND_HALTED" | tee build/gui-check/early-boot.txt
+    tail -80 build/emu.log | tee -a build/gui-check/early-boot.txt
+    exit 1
+fi
+echo "NO_EARLY_SELINUX_FATAL_DETECTED" > build/gui-check/early-boot.txt
 sleep 8
 log "Waiting for adb and systemReady (bounded to avoid an indefinitely hung test)"
 set +e
