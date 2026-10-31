@@ -17,6 +17,14 @@ target = project / "app/src/main/java/com/hexadecinull/vineos/domain/GuestImageP
 target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(source, target)
 
+# Foreground-service fix for Android 16 / HyperOS 3.
+service_source = Path(
+    "overrides/app/src/main/java/com/hexadecinull/vineos/service/VineService.kt"
+)
+service_target = project / "app/src/main/java/com/hexadecinull/vineos/service/VineService.kt"
+assert service_target.is_file(), "Upstream VineService missing"
+shutil.copyfile(service_source, service_target)
+
 vm = project / "app/src/main/java/com/hexadecinull/vineos/ui/viewmodel/CreateInstanceViewModel.kt"
 text = vm.read_text(encoding="utf-8")
 
@@ -77,4 +85,53 @@ if txt.count(before) != 1:
 txt = txt.replace(before, after)
 ui.write_text(txt, encoding="utf-8")
 
-print("VineOS alpha patched: guest ROM provisioning + disabled misleading root toggle")
+# Wait for Android to promote the service before starting native code.
+# The service starts on Android's main thread and reports readiness in onCreate.
+manager = project / "app/src/main/java/com/hexadecinull/vineos/domain/VineVMManager.kt"
+manager_text = manager.read_text(encoding="utf-8")
+before_import = "import kotlinx.coroutines.delay"
+after_import = """import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.coroutines.flow.first"""
+if manager_text.count(before_import) != 1:
+    raise RuntimeError("Unexpected upstream coroutine imports")
+manager_text = manager_text.replace(before_import, after_import, 1)
+before_start = """            ContextCompat.startForegroundService(
+                context,
+                Intent(context, VineService::class.java).apply { action = VineService.ACTION_START },
+            )
+
+            val handle = VineRuntime.startInstance("""
+after_start = """            // Avoid ForegroundServiceDidNotStartInTimeException on HyperOS 3.
+            // Do not start heavy native VM code until Android acknowledges FGS.
+            val foregroundStarted = try {
+                withContext(Dispatchers.Main.immediate) {
+                    ContextCompat.startForegroundService(
+                        context,
+                        Intent(context, VineService::class.java).apply {
+                            action = VineService.ACTION_START
+                        },
+                    )
+                }
+                withTimeoutOrNull(4_000L) {
+                    VineService.foregroundReady.first { it }
+                } == true
+            } catch (e: RuntimeException) {
+                android.util.Log.e("VineOS", "Could not start foreground service", e)
+                false
+            }
+            if (!foregroundStarted) {
+                android.util.Log.e("VineOS", "Service did not become foreground promptly")
+                flow.value = VMStatus.ERROR
+                context.stopService(Intent(context, VineService::class.java))
+                return@launch
+            }
+
+            val handle = VineRuntime.startInstance("""
+if manager_text.count(before_start) != 1:
+    raise RuntimeError("Unexpected upstream VM foreground-service startup")
+manager_text = manager_text.replace(before_start, after_start, 1)
+manager.write_text(manager_text, encoding="utf-8")
+
+print("VineOS alpha patched: ROM provisioning + Android 16 FGS start + honest root UI")
