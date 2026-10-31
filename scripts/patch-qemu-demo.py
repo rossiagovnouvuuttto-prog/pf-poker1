@@ -68,4 +68,14 @@ edit_once(gradle,
         jniLibs {
             useLegacyPackaging = true
         }""")
-print("Rootless QEMU Linux boot test added under Settings")
+# This demo is its own installable package. Other VineOS versions and
+# imported ROMs remain untouched. GitHub debug keys are ephemeral.
+edit_once(gradle,
+    'applicationIdSuffix = ".debug.fgsfix.diag2"',
+    'applicationIdSuffix = ".debug.rootlessqemu"')
+strings = root / "app/src/main/res/values/strings.xml"
+edit_once(strings,
+    '<string name="app_name">VineOS Diagnostics 2</string>',
+    '<string name="app_name">VineOS QEMU Linux Test</string>')
+
+print("Rootless QEMU Linux test added as a separate APK under Settings")
