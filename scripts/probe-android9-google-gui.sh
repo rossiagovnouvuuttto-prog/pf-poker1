@@ -48,6 +48,8 @@ for p in \
     'service check SurfaceFlinger' \
     'service check display' \
     'service check package' \
+    'dumpsys activity activities' \
+    'dumpsys window windows' \
     'wm size'; do
    echo ">>> $p" | tee -a build/gui-check/status.txt
    guest "$p" | tee -a build/gui-check/status.txt
@@ -91,12 +93,38 @@ Path("build/gui-check/screenshot-result.txt").write_text(
 print(Path("build/gui-check/screenshot-result.txt").read_text())
 PY
 
-# Do not claim graphical success from QEMU process start or systemReady alone.
-if grep -q "NONBLACK_GRAPHICAL_FRAME_CAPTURED" build/gui-check/screenshot-result.txt &&
-   grep -q "found" build/gui-check/status.txt; then
-    echo "TRUE_ANDROID9_GUI_CANDIDATE: screenshot + services recorded"
-else
-    echo "GRAPHICAL_ANDROID9_NOT_YET_VERIFIED: logs and screenshot archived"
-fi
+# A nonblack capture might be only a boot animation. Require a running
+# Android 9 framework, a real SurfaceFlinger service, and evidence that a
+# launcher/home Activity is resumed before we call this a desktop candidate.
+cat >build/gui-check/verify-home.py <<'PY_VERIFY'
+from pathlib import Path
+import re
+status=Path("build/gui-check/status.txt").read_text(errors="replace")
+frame=Path("build/gui-check/screenshot-result.txt").read_text(errors="replace")
+def command_out(cmd):
+    a=status.find(">>> "+cmd+"\n")
+    if a<0: return ""
+    s=status[a+len(">>> "+cmd)+1:]
+    return s.split(">>> ",1)[0].strip()
+sdk=command_out("getprop ro.build.version.sdk")
+boot=command_out("getprop sys.boot_completed")
+sf=command_out("service check SurfaceFlinger")
+pkg=command_out("service check package")
+activities=command_out("dumpsys activity activities")
+home=bool(re.search(r"mResumedActivity.*(?:launcher|home)", activities, re.I))
+framework=(sdk=="28" and boot=="1" and "found" in sf and "found" in pkg)
+nonblack="NONBLACK_GRAPHICAL_FRAME_CAPTURED" in frame
+ok=framework and nonblack and home
+result=(
+    "ANDROID9_HOME_SCREEN_VERIFIED" if ok else
+    "ANDROID9_DESKTOP_NOT_VERIFIED"
+)
+detail=f"{result}\nandroid9_sdk={sdk!r} boot_completed={boot!r} SurfaceFlinger={sf!r} package={pkg!r} home_resumed={home} nonblack={nonblack}\n"
+Path("build/gui-check/desktop-verification.txt").write_text(detail)
+print(detail)
+PY_VERIFY
+python3 build/gui-check/verify-home.py
+# A negative result is a useful diagnostic and should not discard the
+# artifacts or be presented as a successful desktop build.
 # Diagnostic workflow intentionally succeeds with a failed screenshot to
 # retain evidence. The result file distinguishes pass from blocker.
