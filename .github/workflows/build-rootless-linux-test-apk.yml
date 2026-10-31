@@ -1,0 +1,126 @@
+name: Build rootless QEMU Linux test APK
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/build-rootless-linux-test-apk.yml"
+      - "scripts/patch-qemu-demo.py"
+      - "scripts/patch-upstream.py"
+      - "scripts/patch-boot-status.py"
+      - "overrides/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout our experimental VineOS patches
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned VineOS base project
+        uses: actions/checkout@v4
+        with:
+          repository: Hexadecinull/VineOS
+          ref: e2b1f47dea86969579b6469f74fad2d0b36edad2
+          path: upstream
+          persist-credentials: false
+
+      - name: Install Java 17 and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-37.1" "cmake;3.22.1"
+
+      - name: Fetch verified ARM64 QEMU binary from Podroid GPL release
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --retry-delay 3 \
+            "https://github.com/ExTV/Podroid/releases/download/v1.2.9/Podroid-v1.2.9-release.apk" \
+            -o podroid-source-release.apk
+          echo "3945c8c887f1df239501de6320fe5c8315bf9805029f530373d3244fee0d2a5f  podroid-source-release.apk" | sha256sum -c -
+          mkdir -p upstream/app/src/main/jniLibs/arm64-v8a
+          unzip -Z1 podroid-source-release.apk | grep '^lib/arm64-v8a/lib' | sort > available-arm64-libs.txt
+          cat available-arm64-libs.txt
+          unzip -jo podroid-source-release.apk \
+            "lib/arm64-v8a/libqemu-system-aarch64.so" \
+            "lib/arm64-v8a/libslirp.so" \
+            -d upstream/app/src/main/jniLibs/arm64-v8a
+          test -s upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
+          readelf -h upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so | head -20
+          readelf -d upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so | grep NEEDED || true
+          rm podroid-source-release.apk
+          mkdir -p upstream/app/src/main/assets/qemu-linux-test
+          mkdir -p upstream/app/src/main/assets/licenses
+          cp docs/ROOTLESS_QEMU_MIGRATION.md upstream/app/src/main/assets/licenses/ROOTLESS_QEMU_MIGRATION.txt
+
+      - name: Bundle real ARM64 Linux kernel and initramfs (Linux-only smoke test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/netboot"
+          curl -fL --retry 5 --retry-all-errors "${BASE}/vmlinuz-virt" \
+            -o upstream/app/src/main/assets/qemu-linux-test/kernel
+          curl -fL --retry 5 --retry-all-errors "${BASE}/initramfs-virt" \
+            -o upstream/app/src/main/assets/qemu-linux-test/initramfs
+          du -h upstream/app/src/main/assets/qemu-linux-test/*
+          sha256sum upstream/app/src/main/assets/qemu-linux-test/*
+          test "$(stat -c %s upstream/app/src/main/assets/qemu-linux-test/kernel)" -gt 1000000
+          test "$(stat -c %s upstream/app/src/main/assets/qemu-linux-test/initramfs)" -gt 1000000
+
+      - name: Apply current VineOS, Android 16, and rootless QEMU patches
+        run: |
+          python3 scripts/patch-upstream.py --project upstream
+          python3 scripts/patch-boot-status.py --project upstream
+          python3 scripts/patch-qemu-demo.py --project upstream
+
+      - name: Build QEMU test APK with Java, Kotlin and native Android runtime
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee ../rootless-build.log
+
+      - name: Inspect APK contains QEMU + Linux boot files
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="upstream/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          unzip -Z1 "$APK" | grep -E '(lib/arm64-v8a/libqemu-system-aarch64\.so|assets/qemu-linux-test/kernel|assets/qemu-linux-test/initramfs)'
+          unzip -Z1 "$APK" | grep -q 'lib/arm64-v8a/libqemu-system-aarch64.so'
+          unzip -Z1 "$APK" | grep -q 'assets/qemu-linux-test/kernel'
+          unzip -Z1 "$APK" | grep -q 'assets/qemu-linux-test/initramfs'
+          cp "$APK" VineOS-Rootless-QEMU-Linux-Test.apk
+          ls -lh VineOS-Rootless-QEMU-Linux-Test.apk
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VineOS-Rootless-QEMU-Linux-Test-APK
+          path: VineOS-Rootless-QEMU-Linux-Test.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload diagnostic build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-linux-build-log
+          path: rootless-build.log
+          if-no-files-found: ignore
+          retention-days: 7
