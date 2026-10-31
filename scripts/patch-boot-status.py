@@ -68,8 +68,40 @@ s=replace_once(s,
         instanceHandle = 0L""",
     """        instanceId = null
         instanceHandle = 0L
+        displayWatchdog?.cancel()
+        displayWatchdog = null
         bootError = null""",
     "Display viewmodel detach")
+s=replace_once(s,
+    "import kotlinx.coroutines.Job",
+    "import kotlinx.coroutines.Job\\nimport kotlinx.coroutines.delay",
+    "Display watchdog imports")
+s=s.replace("import kotlinx.coroutines.Job\\nimport", "import kotlinx.coroutines.Job\nimport")
+s=replace_once(s,
+    """    private var statusJob: Job? = null""",
+    """    private var statusJob: Job? = null
+    private var displayWatchdog: Job? = null""",
+    "Display watchdog job")
+s=replace_once(s,
+    """    fun attach(id: String) {
+        instanceId = id
+        statusJob = viewModelScope.launch {""",
+    """    fun attach(id: String) {
+        instanceId = id
+        displayWatchdog?.cancel()
+        displayWatchdog = viewModelScope.launch {
+            // A VM process can exist while Android init / the guest display
+            // never actually starts. Detect this and avoid a forever-black UI.
+            delay(20_000L)
+            if (bootError == null && vmManager.getFramebufferFd(id) < 0) {
+                bootError = "No Android framebuffer after 20 seconds. " +
+                    "The guest OS has not produced a display. This is not " +
+                    "a minimal Android desktop; apps cannot open until " +
+                    "the container runtime, Binder and graphics work."
+            }
+        }
+        statusJob = viewModelScope.launch {""",
+    "Display watchdog launch")
 model.write_text(s,encoding="utf-8")
 
 # Show a visible diagnostic overlay in the black guest surface.
