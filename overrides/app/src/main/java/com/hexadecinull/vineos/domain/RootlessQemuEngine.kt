@@ -3,6 +3,8 @@ package com.hexadecinull.vineos.domain
 import android.content.Context
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -30,6 +32,39 @@ class RootlessQemuEngine(private val context: Context) {
         get() = File(context.applicationInfo.nativeLibraryDir, "libqemu-system-aarch64.so")
 
     fun isEngineInstalled(): Boolean = executable.isFile && executable.canExecute()
+
+    /**
+     * Copies the small Alpine test kernel/initramfs bundled into THIS test APK.
+     * Stays within private app storage; never requires SAF or root.
+     */
+    suspend fun prepareLinuxTestGuest(): Result<File> = withContext(Dispatchers.IO) {
+        runCatching {
+            val folder = File(context.filesDir, "qemu-guest")
+            check(folder.isDirectory || folder.mkdirs()) { "Cannot create private guest folder" }
+            val kernel = File(folder, "kernel")
+            val initramfs = File(folder, "initramfs")
+            listOf("kernel" to kernel, "initramfs" to initramfs).forEach { (name, out) ->
+                if (!out.isFile || out.length() < 1_000_000L) {
+                    val pending = File(folder, "$name.part")
+                    try {
+                        context.assets.open("qemu-linux-test/$name").use { input ->
+                            FileOutputStream(pending).use { output ->
+                                input.copyTo(output, 128 * 1024)
+                            }
+                        }
+                        check(pending.length() in 1_000_000L..(128L * 1024 * 1024)) {
+                            "Invalid bundled Linux test file: $name"
+                        }
+                        check(pending.renameTo(out)) { "Could not stage Linux test file: $name" }
+                    } finally {
+                        pending.delete()
+                    }
+                }
+            }
+            folder
+        }
+    }
+
 
     /**
      * Boot bundle consists of kernel + initramfs under app-private storage.
@@ -74,7 +109,7 @@ class RootlessQemuEngine(private val context: Context) {
                     "-display", "none",
                     "-serial", "file:${bootLog.absolutePath}",
                     "-monitor", "none",
-                    "-nic", "user,model=virtio-net-pci",
+                    "-nic", "none",
                     "-no-reboot",
                 )
                 // ProcessBuilder argv is passed directly, not through a shell.
@@ -83,6 +118,9 @@ class RootlessQemuEngine(private val context: Context) {
                     .redirectOutput(File(privateBootDir, "qemu-stdout.log"))
                     .redirectError(errorLog)
                 pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
+                // Never report a stale previous boot trace as success.
+                bootLog.delete()
+                errorLog.delete()
                 val p = pb.start()
                 child = p
                 Log.i("VineOS-QEMU", "Started experimental software-emulation process")
@@ -92,6 +130,31 @@ class RootlessQemuEngine(private val context: Context) {
 
     fun isRunning(): Boolean = child?.isAlive == true
 
+    /** Stop process on leaving the test screen without waiting on the main thread. */
+    fun stopImmediately() {
+        child?.destroy()
+        child = null
+    }
+
+    /** Read last bounded lines from QEMU stderr for on-device troubleshooting. */
+    fun errorLog(): String = readTail(File(context.filesDir, "qemu-guest/qemu-stderr.log"))
+
+    fun serialLog(): String = readTail(File(context.filesDir, "qemu-guest/qemu-serial.log"))
+
+    private fun readTail(file: File): String {
+        if (!file.isFile) return "No log yet"
+        return file.inputStream().buffered().use { input ->
+            val size = file.length()
+            var remaining = (size - 16384L).coerceAtLeast(0L)
+            while (remaining > 0L) {
+                val skipped = input.skip(remaining)
+                if (skipped <= 0L) break
+                remaining -= skipped
+            }
+            input.readBytes().toString(Charsets.UTF_8)
+        }
+    }
+
     suspend fun stop() = withContext(Dispatchers.IO) {
         child?.let { p ->
             if (p.isAlive) {
@@ -100,16 +163,5 @@ class RootlessQemuEngine(private val context: Context) {
             }
         }
         child = null
-    }
-
-    fun serialLog(): String {
-        val file = File(context.filesDir, "qemu-guest/qemu-serial.log")
-        if (!file.isFile) return "No serial boot log yet"
-        val size = file.length()
-        // Bound memory usage even if Linux kernel writes many MB of serial logs.
-        return file.inputStream().buffered().use { input ->
-            input.skip((size - 32768).coerceAtLeast(0))
-            input.readBytes().toString(Charsets.UTF_8)
-        }
     }
 }
