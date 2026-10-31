@@ -58,6 +58,7 @@ jobs:
       - name: Build ARM64 Stage-0 that hands PID 1 to Android 9 init
         run: |
           bash rootless-qemu/build-redroid9-stage0.sh "$PWD/android9-boot/stage0.cpio.gz"
+      - name: Probe Android9 with virtio GPU and capture real framebuffer
         shell: bash
         run: |
           set -euo pipefail
