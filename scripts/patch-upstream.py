@@ -134,4 +134,25 @@ if manager_text.count(before_start) != 1:
 manager_text = manager_text.replace(before_start, after_start, 1)
 manager.write_text(manager_text, encoding="utf-8")
 
-print("VineOS alpha patched: ROM provisioning + Android 16 FGS start + honest root UI")
+# Android debug APKs built on different GitHub runners have different signing keys.
+# Give the fixed test build its own package name so the user does NOT have to
+# uninstall the existing app and erase an imported 654 MB ROM to try the fix.
+gradle = project / "app/build.gradle.kts"
+gradle_text = gradle.read_text(encoding="utf-8")
+old_suffix = 'applicationIdSuffix = ".debug"'
+new_suffix = 'applicationIdSuffix = ".debug.fgsfix"'
+if gradle_text.count(old_suffix) != 1:
+    raise RuntimeError("Unexpected upstream debug applicationIdSuffix")
+gradle.write_text(gradle_text.replace(old_suffix, new_suffix), encoding="utf-8")
+strings_file = project / "app/src/main/res/values/strings.xml"
+strings_text = strings_file.read_text(encoding="utf-8")
+if strings_text.count('<string name="app_name">VineOS</string>') != 1:
+    raise RuntimeError("Unexpected upstream app label")
+strings_file.write_text(
+    strings_text.replace(
+        '<string name="app_name">VineOS</string>',
+        '<string name="app_name">VineOS Fix (test)</string>'
+    ), encoding="utf-8"
+)
+
+print("VineOS alpha patched: ROM provisioning + Android 16 FGS start + independent test install")
