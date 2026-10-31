@@ -67,3 +67,39 @@ New reproducible test:
    emulation alone is unlikely to deliver playable Standoff 2 framerates.
 
 Do not suggest downloading another "fixed" APK without verified functionality.
+
+
+## 2026-11-01: Verified inactive QEMU display + missing guest DRM
+
+The actual screenshot in
+[run 41244885379](../../actions/runs/41244885379) shows the QEMU monitor
+message **"Display output is not active."** in small gray letters over
+black at 640×480. The previous ad hoc `NONBLACK_FRAME` classification was
+**false positive**, not a live Android 9 home screen. The screenshot had
+99.78% dark pixels and no saturated-colored pixels. The CI criterion now
+distinguishes this placeholder from graphical output.
+
+The reused Podroid ARM64 kernel had both `CONFIG_DRM` and `CONFIG_FB`
+**disabled**. Adding `-device virtio-gpu-pci` to QEMU is not enough when
+the guest kernel has no corresponding DRM/KMS driver. A new pinned,
+reproducible GPL kernel build explicitly enables
+`CONFIG_DRM_VIRTIO_GPU=y`, with a Linux userspace probe for a real
+`/sys/class/drm/card0`:
+[guest virtio-DRM kernel run](../../actions/runs/41245676886).
+
+If that kernel passes, a dependent workflow will try real Redroid Android 9
+with the actual virtio GPU and collect guest `hwcomposer` restarts:
+[dependent real Android9 DRM test](../../actions/workflows/android9-gpu-desktop-check.yml).
+
+**Do not infer a finished GUI from a DRM device alone.** The Android 9
+Redroid composer code still has to emit real frames. In the tagged
+`redroid-9.0.0` source, `vendor_redroid/hwcomposer/hwcomposer.cpp` contains
+a commented-out `fbdev->post(...)` call, so the QEMU VNC display may
+remain inactive even after the kernel supports virtio GPU. The alternative
+[official Android 9 API 28 image test](../../actions/workflows/android9-official-gui-probe.yml)
+uses its matching emulator renderer and explicitly attempts to wake and
+launch HOME.
+
+Real acceptance: a live guest launcher/frame, verified Android 9 API28,
+boot complete + SurfaceFlinger, and eventually touch on a real tablet.
+A QEMU-host text framebuffer is not acceptance.
