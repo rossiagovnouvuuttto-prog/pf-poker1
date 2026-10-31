@@ -90,7 +90,7 @@ jobs:
         run: |
           set -euo pipefail
           bash rootless-qemu/build-redroid9-stage0.sh \
-            "$PWD/upstream/app/src/main/assets/qemu-android9/stage0.cpio.gz"
+            "$PWD/upstream/app/src/main/assets/qemu-android9/stage0.img"
           du -h upstream/app/src/main/assets/qemu-android9/*
           sha256sum upstream/app/src/main/assets/qemu-android9/*
 
@@ -121,7 +121,7 @@ jobs:
           grep -Fx 'assets/qemu-linux-test/kernel' apk-entries.txt
           grep -Fx 'assets/qemu-linux-test/initramfs' apk-entries.txt
           grep -Fx 'assets/qemu-android9/kernel' apk-entries.txt
-          grep -Fx 'assets/qemu-android9/stage0.cpio.gz' apk-entries.txt
+          grep -Fx 'assets/qemu-android9/stage0.img' apk-entries.txt
           cp "$APK" VineOS-Android9-QEMU-EarlyBoot.apk
           ls -lh VineOS-Android9-QEMU-EarlyBoot.apk
 
