@@ -116,7 +116,7 @@ def pack(image: Path, output: Path, require_su: bool) -> None:
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(output, "w", allowZip64=True) as z:
-        z.write(image, "rootfs.img", compress_type=zipfile.ZIP_STORED)
+        z.write(image, "rootfs.img", compress_type=zipfile.ZIP_DEFLATED, compresslevel=3)
         z.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
     with zipfile.ZipFile(output, "r") as z:
         if z.testzip() is not None:
