@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/build-vineos.yml"
+      - "overrides/**"
+      - "scripts/**"
   workflow_dispatch:
 
 permissions:
@@ -15,11 +17,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
+      - name: Checkout our patches
+        uses: actions/checkout@v4
+
       - name: Checkout pinned original VineOS source
         uses: actions/checkout@v4
         with:
           repository: Hexadecinull/VineOS
           ref: e2b1f47dea86969579b6469f74fad2d0b36edad2
+          path: upstream
           persist-credentials: false
 
       - name: Set up Java 17
@@ -37,19 +43,23 @@ jobs:
           sdkmanager --install "platforms;android-37.1" "cmake;3.22.1"
 
 
+      - name: Apply Android 9 image provisioning patch
+        run: python3 scripts/patch-upstream.py --project upstream
+
       - name: Build signed debug APK
+        working-directory: upstream
         shell: bash
         run: |
           set -o pipefail
           chmod +x ./gradlew
-          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee build.log
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee ../build.log
 
       - name: Upload APK artifact
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: VineOS-debug-APK
-          path: app/build/outputs/apk/debug/*.apk
+          path: upstream/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
           retention-days: 30
 
