@@ -1,0 +1,59 @@
+name: Publish Android 9 QEMU test APK without GitHub login
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-android9-qemu-test-release.yml"
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Download validated APK from successful Android 9 CI build
+        uses: actions/download-artifact@v4
+        with:
+          name: VineOS-Android9-QEMU-EarlyBoot-APK
+          run-id: 41241447717
+          github-token: ${{ github.token }}
+          path: dist
+
+      - name: Validate release file and required Android9 QEMU boot assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="dist/VineOS-Android9-QEMU-EarlyBoot.apk"
+          test -s "$APK"
+          unzip -t "$APK" | tail -2
+          unzip -Z1 "$APK" > /tmp/apk-contents.txt
+          grep -Fx 'lib/arm64-v8a/libqemu-system-aarch64.so' /tmp/apk-contents.txt
+          grep -Fx 'assets/qemu-android9/kernel' /tmp/apk-contents.txt
+          grep -Fx 'assets/qemu-android9/stage0.img' /tmp/apk-contents.txt
+          ls -lh "$APK"
+          sha256sum "$APK"
+
+      - name: Publish direct-download prerelease for users without GitHub account
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="vineos-android9-qemu-earlyboot-test"
+          APK="dist/VineOS-Android9-QEMU-EarlyBoot.apk"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "$APK" --clobber
+          else
+            gh release create "$TAG" "$APK" \
+              --target "$GITHUB_SHA" \
+              --title "VineOS Android 9 QEMU — early boot console TEST" \
+              --notes "Experimental ARM64 QEMU boot test. Imports user-selected Redroid 9 .vrom, attempts to start real Android 9 init, and shows serial logs. NOT a functioning Android 9 desktop: no working graphics, Magisk ROOT for apps, or Standoff 2. No host ROOT required. Do not delete your existing ROMs. Source: this repository and Podroid's GPL QEMU (see docs/QEMU_BINARY_PROVENANCE.md)." \
+              --prerelease
+          fi
+          gh release view "$TAG" --json url,assets
