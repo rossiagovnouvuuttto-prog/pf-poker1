@@ -129,7 +129,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: VineOS-Android9-QEMU-EarlyBoot-APK
-          path: VineOS-Rootless-QEMU-Linux-Test.apk
+          path: VineOS-Android9-QEMU-EarlyBoot.apk
           if-no-files-found: error
           retention-days: 30
           compression-level: 0
