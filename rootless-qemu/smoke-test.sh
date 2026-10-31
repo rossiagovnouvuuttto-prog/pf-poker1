@@ -11,7 +11,7 @@ mkdir -p out
 cd out
 BASE="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/netboot"
 curl --fail --location --retry 3 --silent --show-error "${BASE}/vmlinuz-virt" -o kernel
-curl --fail --location --retry 3 --silent --show-error "${BASE}/initramfs-virt" -o initramfs
+bash ../build-alpine-initramfs.sh "$PWD/initramfs"
 
 test "$(stat -c '%s' kernel)" -gt 1000000
 test "$(stat -c '%s' initramfs)" -gt 1000000
@@ -27,7 +27,7 @@ qemu-system-aarch64 \
     -m 1024 \
     -kernel kernel \
     -initrd initramfs \
-    -append "console=ttyAMA0" \
+    -append "console=ttyAMA0 rdinit=/init" \
     -display none \
     -serial stdio \
     -monitor none \
@@ -40,8 +40,8 @@ cleanup() {
 }
 trap cleanup EXIT
 booted=0
-for i in $(seq 1 100); do
-    if grep -Eq 'Linux version|Booting Linux|Welcome to Alpine' serial.log; then
+for i in $(seq 1 160); do
+    if grep -q 'VINEOS_ALPINE_USERLAND_READY' serial.log; then
         booted=1
         break
     fi
@@ -56,6 +56,6 @@ if [[ "$booted" -ne 1 ]]; then
     tail -100 serial.log >&2
     exit 1
 fi
-echo "PASS: real ARM64 Linux kernel started under rootless QEMU/TCG"
-grep -E 'Linux version|Booting Linux|Welcome to Alpine' serial.log | head -5
+echo "PASS: real ARM64 Alpine Linux userspace started under rootless QEMU/TCG"
+grep -E 'Linux version|VINEOS_ALPINE_USERLAND_READY|Alpine Linux is running' serial.log | head -5
 echo "NOTE: this does not demonstrate Android 9 boot or GPU acceleration"
