@@ -48,3 +48,28 @@ are included.
 - `scripts/patch-upstream.py`: transparently patch selected upstream files
 
 This fork is for development; original project is GPL-3.0.
+
+
+## Experimental Android 9 ROM from Redroid
+
+The workflow [Build Android 9 ROM from Redroid](../../actions/workflows/redroid9.yml)
+can pull the **real** `redroid/redroid:9.0.0-latest` ARM64 image, export its
+filesystem, verify that it identifies as Android 9 / API 28, convert the root
+filesystem to ext4, and package it as a `.vrom` file. This is different from
+the previously empty VineOS ROM list.
+
+**What this does NOT mean:**
+- Redroid is meant for privileged Linux containers, not a standard Android
+  APK running on a non-rooted HyperOS 3 tablet.
+- `su` may exist in the image but does not guarantee that root requests
+  from Android applications work. Magisk is **not installed**.
+- The old VineOS native container still needs host namespace/mount
+  privileges and Android-compatible Binder, display, and graphics support.
+- The packaged image has **never been boot-tested on the tablet**. It's a
+  real Android 9 filesystem, not yet a working VineOS virtual machine.
+- The published archive is a short-lived GitHub Action artifact rather
+  than a ROM release.
+
+For an already-provided, complete and trusted Android 9 ARM64 rootfs,
+use `rom-tools/pack_android9_vrom.py` or the manual
+`Validate and package Android 9 ROM` workflow with an HTTPS URL and SHA-256.
