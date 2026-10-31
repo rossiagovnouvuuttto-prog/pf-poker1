@@ -1,0 +1,94 @@
+name: Validate and package Android 9 ROM
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rom-tools/**"
+      - "tests/test_pack_android9_vrom.py"
+      - ".github/workflows/rom9.yml"
+  workflow_dispatch:
+    inputs:
+      rootfs_url:
+        description: "Public HTTPS URL of a COMPLETE Android 9 ext4 rootfs.img; leave blank for tests only"
+        required: false
+        type: string
+      rootfs_sha256:
+        description: "64-character SHA-256 of image to package (required when URL is provided)"
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Check ext4 image test tools
+        run: |
+          command -v python3
+          command -v debugfs
+          command -v mke2fs
+      - name: Verify ROM packaging checks with synthetic test images
+        run: python3 -m unittest discover -s tests -p "test_pack_android9_vrom.py" -v
+
+  package-android9:
+    needs: verify
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.rootfs_url != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    env:
+      ROM_URL: ${{ inputs.rootfs_url }}
+      ROM_SHA: ${{ inputs.rootfs_sha256 }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify a supplied Android 9 root filesystem
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re, sys, urllib.parse, urllib.request
+          url = os.environ["ROM_URL"]
+          digest = os.environ["ROM_SHA"]
+          parsed = urllib.parse.urlsplit(url)
+          if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+              sys.exit("Only authenticated HTTPS URLs are supported")
+          if not re.fullmatch(r"[a-fA-F0-9]{64}", digest):
+              sys.exit("The full SHA-256 of your ROM image is required")
+          req = urllib.request.Request(url, headers={"User-Agent": "VineOS-ROM-validation/1"})
+          h = hashlib.sha256()
+          total = 0
+          with urllib.request.urlopen(req, timeout=60) as response, open("rootfs.img", "wb") as out:
+              final_url = urllib.parse.urlsplit(response.geturl())
+              if final_url.scheme != "https":
+                  sys.exit("Redirected ROM download to non-HTTPS URL")
+              while True:
+                  chunk = response.read(1024 * 1024)
+                  if not chunk:
+                      break
+                  total += len(chunk)
+                  if total > 10 * 1024 ** 3:
+                      sys.exit("Image exceeds runner storage limit")
+                  h.update(chunk)
+                  out.write(chunk)
+          if h.hexdigest().lower() != digest.lower():
+              sys.exit("Invalid image SHA-256; refusing to package")
+          print("ROM image SHA-256 verified.")
+          PY
+
+      - name: Validate Android 9 and visible su file, then package
+        run: |
+          python3 rom-tools/pack_android9_vrom.py \
+            --rootfs rootfs.img \
+            --output vine-rom-9-experimental.vrom \
+            --require-su
+
+      - name: Upload experimental ROM (NOT VERIFIED BOOTABLE)
+        uses: actions/upload-artifact@v4
+        with:
+          name: vine-rom-9-experimental-not-boot-tested
+          path: vine-rom-9-experimental.vrom
+          if-no-files-found: error
+          retention-days: 7
