@@ -1,0 +1,74 @@
+name: Build Android 9 ROM from Redroid
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [".github/workflows/redroid9.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  redroid9:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout our VineOS ROM tools
+        uses: actions/checkout@v4
+
+      - name: Pull real ARM64 Android 9 source image
+        run: |
+          docker pull --platform linux/arm64 redroid/redroid:9.0.0-latest
+          docker image inspect redroid/redroid:9.0.0-latest --format '{{json .RepoDigests}}'
+
+      - name: Extract Android 9 filesystem from container image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cid="$(docker create --platform linux/arm64 redroid/redroid:9.0.0-latest)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p guest-root
+          docker export "$cid" | sudo tar --numeric-owner --same-owner -xf - -C guest-root
+          test -e guest-root/init || { echo "Docker image has no /init"; exit 1; }
+          test -f guest-root/system/build.prop || { echo "Docker image has no /system/build.prop"; exit 1; }
+          grep -Eq '^ro.build.version.sdk=28$' guest-root/system/build.prop || {
+            echo "NOT Android 9 / API 28, refusing to package"; exit 1;
+          }
+          echo "Android 9 build.prop verified"
+          sudo du -sh guest-root
+          docker rm "$cid"
+          docker image rm redroid/redroid:9.0.0-latest || true
+          docker system prune -af || true
+
+      - name: Create ext4 rootfs with Android 9 contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          size_kib="$(sudo du -sk guest-root | cut -f1)"
+          size_mib="$(( size_kib / 1024 + 768 ))"
+          if [ "$size_mib" -gt 6000 ]; then
+            echo "Image too large for this free GitHub runner"; exit 1
+          fi
+          truncate -s "${size_mib}M" rootfs.img
+          sudo mke2fs -q -t ext4 -F -d guest-root rootfs.img
+          sudo chown "$(id -u):$(id -g)" rootfs.img
+          sudo rm -rf guest-root
+          ls -lh rootfs.img
+
+      - name: Package Android 9 to VineOS .vrom (boot/root NOT verified)
+        run: |
+          python3 rom-tools/pack_android9_vrom.py \
+            --rootfs rootfs.img \
+            --output vine-rom-9-redroid-unverified.vrom
+          sha256sum vine-rom-9-redroid-unverified.vrom
+          ls -lh vine-rom-9-redroid-unverified.vrom
+
+      - name: Upload experimental Android 9 ROM
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android9-Redroid-VineOS-ROM-EXPERIMENTAL
+          path: vine-rom-9-redroid-unverified.vrom
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
