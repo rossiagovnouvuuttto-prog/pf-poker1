@@ -1,0 +1,64 @@
+name: Android 9 Official Emulator GUI (rootless QEMU TCG) proof
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/android9-official-gui-probe.yml"
+      - "scripts/probe-android9-google-gui.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android9-graphical-boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 85
+    steps:
+      - name: Checkout our GUI verification script
+        uses: actions/checkout@v4
+      - name: Checkout pinned rootless Android9 API28 arm64 emulator bring-up source
+        uses: actions/checkout@v4
+        with:
+          repository: lhns/android-arm-tcg
+          ref: f9eecf6c0d2fcc1e255b5a6d7322b07cbe017ba9
+          path: arm-tcg
+          persist-credentials: false
+      - name: Java 21 for pinned Google Android SDK build tools
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install userspace emulation, graphics and Android image tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq \
+            curl unzip e2fsprogs qemu-utils file xxd cpio perl python3 python3-pil \
+            gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu \
+            libx11-6 libxext6 libxfixes3 libxdamage1 libxshmfence1 \
+            libgl1-mesa-dri libglx-mesa0 libegl-mesa0 libegl1 \
+            libgles2 libgbm1 libdrm2 libglvnd0 libopengl0
+          # Reclaim build tools that are irrelevant to this Android9 graphical probe.
+          sudo rm -rf /usr/local/lib/android/sdk/ndk \
+            /usr/local/lib/android/sdk/cmake \
+            /usr/share/swift \
+            /opt/hostedtoolcache/CodeQL || true
+          df -h .
+      - name: Boot official Google Android 9 ARM64 image under software QEMU and probe real screenshot
+        env:
+          GOOGLE_EMU_PROJECT: ${{ github.workspace }}/arm-tcg
+        shell: bash
+        run: bash scripts/probe-android9-google-gui.sh
+      - name: Upload real boot logs and screenshot if present
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-api28-official-gui-evidence
+          path: |
+            arm-tcg/build/gui-check/
+          if-no-files-found: warn
+          retention-days: 14
+          compression-level: 6
