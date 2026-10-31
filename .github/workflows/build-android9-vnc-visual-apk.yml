@@ -4,6 +4,7 @@ on:
   workflow_run:
     workflows:
       - "Build Android ARM64 QEMU with VNC framebuffer"
+      - "Android 9 guest GPU driver — rebuild ARM64 virtio DRM kernel"
     types: [completed]
   workflow_dispatch:
 
