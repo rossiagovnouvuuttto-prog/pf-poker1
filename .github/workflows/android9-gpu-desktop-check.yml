@@ -1,0 +1,123 @@
+name: Android 9 desktop evidence using rebuilt virtio GPU kernel
+
+on:
+  workflow_run:
+    workflows:
+      - "Android 9 guest GPU driver — rebuild ARM64 virtio DRM kernel"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  android9-with-real-drm:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Checkout Android 9 early boot loader
+        uses: actions/checkout@v4
+      - name: Download the exact compiled and verified virtio-DRM ARM64 kernel
+        uses: actions/download-artifact@v4
+        with:
+          name: android9-arm64-virtio-drm-kernel-and-evidence
+          run-id: ${{ github.event.workflow_run.id || 41245676886 }}
+          github-token: ${{ github.token }}
+          path: gpu-kernel
+      - name: Verify DRM driver was built into the guest kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s gpu-kernel/kernel
+          grep -Fx 'CONFIG_DRM=y' gpu-kernel/config
+          grep -Fx 'CONFIG_DRM_VIRTIO_GPU=y' gpu-kernel/config
+          grep -q 'VINEOS_QEMU_DRM_CARD_READY' gpu-kernel/serial.log
+          echo 'A real ARM64 Linux VM detected a virtio GPU DRM device.'
+      - name: Install the Android9 filesystem and VM tools
+        shell: bash
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm cpio e2fsprogs socat python3-pil
+      - name: Prepare actual Android9 (API 28) virtio system disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 redroid/redroid:9.0.0-latest
+          cid="$(docker create --platform linux/arm64 redroid/redroid:9.0.0-latest)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p android9-source android9-drm
+          docker export "$cid" | sudo tar --numeric-owner -xf - -C android9-source
+          sudo grep -q '^ro.build.version.sdk=28$' android9-source/system/build.prop
+          du_kib="$(sudo du -sk android9-source | cut -f1)"
+          disk_mib="$((du_kib / 1024 + 850))"
+          [ "$disk_mib" -le 5000 ]
+          truncate -s "${disk_mib}M" android9-drm/android9-rootfs.img
+          sudo mke2fs -q -F -t ext4 -d android9-source android9-drm/android9-rootfs.img
+          sudo chown "$(id -u):$(id -g)" android9-drm/android9-rootfs.img
+          rm -rf android9-source || sudo rm -rf android9-source
+      - name: Create QEMU stage-0 loader for Android 9
+        shell: bash
+        run: bash rootless-qemu/build-redroid9-stage0.sh "$PWD/android9-drm/stage0.cpio.gz"
+      - name: Boot Android9 with actual virtio-GPU and inspect hwcomposer
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android9-drm
+          qemu-system-aarch64 \
+            -machine virt -accel tcg,thread=multi -cpu cortex-a57 -smp 2 -m 2048 \
+            -kernel ../gpu-kernel/kernel -initrd stage0.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init androidboot.hardware=redroid androidboot.selinux=permissive selinux=0 androidboot.redroid_gpu_mode=auto androidboot.redroid_width=800 androidboot.redroid_height=600" \
+            -drive if=none,file=android9-rootfs.img,format=raw,id=androiddisk \
+            -device virtio-blk-device,drive=androiddisk \
+            -device virtio-gpu-pci \
+            -vnc 127.0.0.1:2 \
+            -serial stdio -monitor unix:monitor.sock,server=on,wait=off \
+            -nic none -no-reboot </dev/null >serial.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+          sleep 120
+          printf 'screendump gpu-screen.ppm\n' | socat - UNIX-CONNECT:monitor.sock >monitor.log 2>&1 || true
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image
+          serial=Path('serial.log').read_text(errors='replace') if Path('serial.log').exists() else ''
+          found='ANDROID9_STAGE0_HANDOFF_TO_ACTUAL_INIT' in serial
+          driver='virtio_gpu' in serial or 'virtio-gpu' in serial
+          crashes=serial.count("Service 'vendor.hwcomposer-2-1'") 
+          print(f"ANDROID9_INIT_HANDOFF={found} VIRTIO_GPU_KERNEL_LOG={driver} HWC_LOG_EVENTS={crashes}")
+          p=Path('gpu-screen.ppm')
+          if p.exists():
+              im=Image.open(p).convert('RGB')
+              im.save('gpu-screen.png')
+              pixels=list(im.resize((256,256)).getdata())
+              dark=sum(1 for c in pixels if max(c)<15)/len(pixels)
+              colorful=sum(1 for c in pixels if max(c)-min(c)>20)/len(pixels)
+              print(f"QEMU_SCREEN={im.size} dark={dark:.4f} colorful={colorful:.4f}")
+              if dark>0.99 and colorful<0.001:
+                  print("QEMU_DISPLAY_INACTIVE_OR_BLACK")
+              else:
+                  print("NONBLANK_QEMU_SCREEN_NOT_YET_ANDROID_DESKTOP")
+          else:
+              print("QEMU_SCREEN_CAPTURE_UNAVAILABLE")
+          if 'sys.boot_completed=1' not in serial:
+              print("ANDROID9_DESKTOP_NOT_VERIFIED")
+          Path('result.txt').write_text(
+              f"init_handoff={found} kernel_gpu={driver} hwc_events={crashes}\n"
+              "Full Android9 desktop/boot_completed is NOT confirmed by a QEMU screenshot.\n")
+          PY
+          grep -Ei 'virtio_gpu|drm|ANDROID9_STAGE0|hwcomposer|surfaceflinger|boot_completed' serial.log | tail -120 || true
+          test -s result.txt
+      - name: Save genuine graphics diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-real-drm-guest-gpu-evidence
+          path: |
+            android9-drm/serial.log
+            android9-drm/result.txt
+            android9-drm/monitor.log
+            android9-drm/gpu-screen.png
+          if-no-files-found: ignore
+          retention-days: 14
