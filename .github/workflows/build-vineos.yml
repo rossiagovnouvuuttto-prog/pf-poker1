@@ -34,7 +34,11 @@ jobs:
       - name: Install platform and CMake
         run: |
           yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager --install "platforms;android-37" "cmake;3.22.1"
+          sdkmanager --install "platforms;android-36" "cmake;3.22.1"
+
+      - name: Use available Android SDK 36 for alpha build
+        run: |
+          sed -i -e "s/compileSdk = 37/compileSdk = 36/" -e "s/targetSdk = 37/targetSdk = 36/" app/build.gradle.kts
 
       - name: Build signed debug APK
         shell: bash
