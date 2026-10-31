@@ -25,11 +25,37 @@ s=replace_once(s,
     """    private val statusFlows = mutableMapOf<String, MutableStateFlow<VMStatus>>()
     private val startupErrors = java.util.concurrent.ConcurrentHashMap<String, String>()
 
-    fun getStartupError(instanceId: String): String? = startupErrors[instanceId]""",
+    fun getStartupError(instanceId: String): String? = startupErrors[instanceId]
+
+    // Current runtime mounts ext4 loop images and creates Linux namespaces.
+    // These operations require CAP_SYS_ADMIN in the host app process.
+    private fun hasHostSysAdmin(): Boolean? = runCatching {
+        val capHex = java.io.File("/proc/self/status").useLines { lines ->
+            lines.firstOrNull { it.startsWith("CapEff:") }
+                ?.substringAfter(':')?.trim()
+        } ?: return@runCatching null
+        (java.lang.Long.parseUnsignedLong(capHex, 16) and (1L shl 21)) != 0L
+    }.getOrNull()""",
     "VM manager maps")
 s=replace_once(s,
-    "            flow.value = VMStatus.BOOTING\n\n",
-    "            flow.value = VMStatus.BOOTING\n            startupErrors.remove(instance.id)\n\n",
+    """            flow.value = VMStatus.BOOTING
+
+""",
+    """            flow.value = VMStatus.BOOTING
+            startupErrors.remove(instance.id)
+            if (hasHostSysAdmin() == false) {
+                startupErrors[instance.id] =
+                    "This VineOS engine cannot start a guest on this host: " +
+                    "the VineOS app process has no CAP_SYS_ADMIN. " +
+                    "Mounting the Android 9 rootfs as a loop device and creating " +
+                    "the required Linux namespaces need host privileges. " +
+                    "Magisk installed INSIDE the guest cannot grant these. " +
+                    "The guest has not been booted."
+                flow.value = VMStatus.ERROR
+                return@launch
+            }
+
+""",
     "VM manager start")
 s=replace_once(s,
     """            if (handle == 0L) {
@@ -58,13 +84,17 @@ s=replace_once(s,
 s=replace_once(s,
     """                isBooting = status == VMStatus.BOOTING""",
     """                isBooting = status == VMStatus.BOOTING
-                // Do not clear a timeout error if native code later reports
-                // RUNNING: a process handle is NOT evidence of guest video.
+                // The initial StateFlow value is STOPPED: it is emitted
+                // before launchInstance() gets scheduled on Dispatchers.IO.
+                // Do not misreport it as a boot failure.
+                if (status == VMStatus.BOOTING || status == VMStatus.RUNNING) {
+                    launchObserved = true
+                }
                 if (status == VMStatus.ERROR) {
                     bootError = vmManager.getStartupError(id)
                         ?: "Android 9 runtime failed to start."
-                } else if (status == VMStatus.STOPPED && bootError == null) {
-                    bootError = "Android 9 guest stopped before any display was verified."
+                } else if (status == VMStatus.STOPPED && launchObserved && bootError == null) {
+                    bootError = "Guest process stopped after startup; Android 9 display never appeared."
                 }""",
     "Display viewmodel collection")
 s=replace_once(s,
@@ -92,12 +122,13 @@ s=replace_once(s,
         statusJob = viewModelScope.launch {""",
     """    fun attach(id: String) {
         instanceId = id
+        var launchObserved = false
         displayWatchdog?.cancel()
         displayWatchdog = viewModelScope.launch {
             // A VM process can exist while Android init / the guest display
             // never actually starts. Detect this and avoid a forever-black UI.
             delay(20_000L)
-            if (bootError == null) {
+            if (bootError == null && launchObserved) {
                 // Even a valid /dev/graphics/fb0 fd can contain only zeros.
                 // There is currently no verified frame-presentation callback.
                 bootError = "After 20 seconds VineOS still cannot confirm a " +
