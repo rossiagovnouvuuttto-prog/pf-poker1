@@ -68,24 +68,25 @@ jobs:
 
       - name: Publish test APK for download without GitHub login
         if: success()
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          cp upstream/app/build/outputs/apk/debug/app-debug.apk VineOS-Diagnostics-Android16-test.apk
+          cp upstream/app/build/outputs/apk/debug/app-debug.apk VineOS-Diagnostics2-Android16-test.apk
           cat > release-notes.md <<'EOF'
           VineOS experimental Android 16 / HyperOS 3 foreground-service fix.
 
           - Fixes ForegroundServiceDidNotStartInTimeException candidate by promoting
             VineService in onCreate and waiting for the service before native boot.
-          - Installs as a separate app named "VineOS Diagnostics (test)", preserving old
+          - Installs as a separate app named "VineOS Diagnostics 2", preserving old
             VineOS app data and already imported ROMs.
           - Import the original .vrom again from Downloads into this separate app.
           - This APK is NOT a boot-tested Android 9 VM; guest ROOT and GPU
             support are not implemented. Further native startup errors are possible.
           EOF
           gh release create "vineos-fgsfix-${GITHUB_RUN_NUMBER}" \
-            VineOS-Diagnostics-Android16-test.apk \
+            VineOS-Diagnostics2-Android16-test.apk \
             --repo "${GITHUB_REPOSITORY}" \
             --target "${GITHUB_SHA}" \
             --title "VineOS Diagnostics: Android 9 black screen (test)" \
