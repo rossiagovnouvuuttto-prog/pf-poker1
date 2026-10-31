@@ -20,9 +20,9 @@ jobs:
       - name: Install QEMU system ARM64 without relying on host KVM
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-arm
+          sudo apt-get install -y -qq qemu-system-arm cpio
           command -v qemu-system-aarch64
-      - name: Boot real ARM64 Linux kernel using QEMU TCG
+      - name: Boot complete ARM64 Alpine userland using rootless QEMU TCG
         run: bash rootless-qemu/smoke-test.sh
       - name: Upload serial console log
         if: always()
