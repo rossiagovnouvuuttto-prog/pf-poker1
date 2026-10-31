@@ -1,0 +1,117 @@
+name: Android 9 virtio GPU compositor diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rootless-qemu/build-redroid9-stage0.sh"
+      - ".github/workflows/android9-virtio-gpu-compositor.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-android9:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU / ext4 / initramfs tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm cpio e2fsprogs socat python3-pil
+      - name: Obtain the ARM64 Android-capable Podroid kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-all-errors \
+            "https://github.com/ExTV/Podroid/releases/download/v1.2.9/Podroid-v1.2.9-release.apk" -o podroid.apk
+          echo "3945c8c887f1df239501de6320fe5c8315bf9805029f530373d3244fee0d2a5f  podroid.apk" | sha256sum -c -
+          mkdir -p android9-boot
+          unzip -p podroid.apk assets/vmlinuz-virt >android9-boot/kernel
+          test "$(stat -c %s android9-boot/kernel)" -gt 2000000
+          rm podroid.apk
+      - name: Download actual Android 9 arm64 filesystem and prepare virtio disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 redroid/redroid:9.0.0-latest
+          cid="$(docker create --platform linux/arm64 redroid/redroid:9.0.0-latest)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p android9-source
+          docker export "$cid" | sudo tar --numeric-owner -xf - -C android9-source
+          sudo grep -q '^ro.build.version.sdk=28$' android9-source/system/build.prop
+          sudo file -L android9-source/init
+          sudo test -x android9-source/init
+          du_kib="$(sudo du -sk android9-source | cut -f1)"
+          disk_mib="$(( du_kib / 1024 + 850 ))"
+          echo "Android 9 rootfs source bytes: $(sudo du -sb android9-source | cut -f1)"
+          echo "Guest ext4 disk size: ${disk_mib} MiB"
+          if [ "$disk_mib" -gt 5000 ]; then echo "Rootfs too large for CI"; exit 1; fi
+          truncate -s "${disk_mib}M" android9-boot/android9-rootfs.img
+          sudo mke2fs -q -t ext4 -F -d android9-source android9-boot/android9-rootfs.img
+          sudo chown "$(id -u):$(id -g)" android9-boot/android9-rootfs.img
+          sudo rm -rf android9-source
+          sudo e2fsck -n android9-boot/android9-rootfs.img || true
+          echo "Prepared real Android 9 system disk for QEMU virtio."
+      - name: Build ARM64 Stage-0 that hands PID 1 to Android 9 init
+        run: |
+          bash rootless-qemu/build-redroid9-stage0.sh "$PWD/android9-boot/stage0.cpio.gz"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android9-boot
+          # Deliberate difference from baseline: a real virtio GPU/2D framebuffer
+          # and VNC display. Compare guest HWC service crashes and capture a frame.
+          qemu-system-aarch64 \
+            -machine virt -accel tcg,thread=multi -cpu cortex-a57 -smp 2 -m 2048 \
+            -kernel kernel -initrd stage0.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init androidboot.hardware=redroid androidboot.selinux=permissive selinux=0" \
+            -drive if=none,file=android9-rootfs.img,format=raw,id=androiddisk \
+            -device virtio-blk-device,drive=androiddisk \
+            -device virtio-gpu-pci \
+            -vnc 127.0.0.1:2 \
+            -serial stdio -monitor unix:monitor.sock,server=on,wait=off \
+            -nic none -no-reboot </dev/null >serial.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+          echo "Android9 GUI hardware experiment QEMU PID=$pid"
+          sleep 105
+          echo 'screendump guest-gpu.ppm' | socat - UNIX-CONNECT:monitor.sock > monitor-response.txt 2>&1 || true
+          echo "=== Monitor ==="
+          cat monitor-response.txt
+          echo "=== Guest Android9 graphics ==="
+          grep -Ei 'SurfaceFlinger|hwcomposer|gralloc|EGL|binder|android9_stage0_|boot_completed' serial.log | tail -95 || true
+          python3 - <<'PY'
+          from pathlib import Path
+          from PIL import Image, ImageStat
+          p=Path('guest-gpu.ppm')
+          if not p.exists():
+              print("NO_GRAPHIC_FRAME: QEMU screendump unavailable")
+          else:
+              try:
+                  im=Image.open(p).convert('RGB')
+                  stats=ImageStat.Stat(im.resize((256,256)))
+                  print(f"ACTUAL_FRAME size={im.size} rgb_stddev={stats.stddev}")
+                  print("NONBLACK_FRAME" if sum(stats.stddev)>6 else "BLACK_OR_BLANK_FRAME")
+                  im.save('guest-gpu.png')
+              except Exception as e:
+                  print(f"GRAPHIC_FRAME_DECODE_FAILED: {e}")
+          PY
+          grep -q 'ANDROID9_STAGE0_HANDOFF_TO_ACTUAL_INIT' serial.log || {
+            echo "::error::Android /init never started with virtio-gpu"; exit 1;
+          }
+          echo "Diagnostic complete. GPU screenshot and real Android9 init serial log saved."
+      - name: Upload actual Android 9 virtio-GPU frame and compositor logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-redroid-virtio-gpu-evidence
+          path: |
+            android9-boot/serial.log
+            android9-boot/guest-gpu.ppm
+            android9-boot/guest-gpu.png
+            android9-boot/monitor-response.txt
+          if-no-files-found: ignore
+          retention-days: 14
