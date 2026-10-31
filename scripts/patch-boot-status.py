@@ -58,10 +58,14 @@ s=replace_once(s,
 s=replace_once(s,
     """                isBooting = status == VMStatus.BOOTING""",
     """                isBooting = status == VMStatus.BOOTING
-                bootError = if (status == VMStatus.ERROR) {
-                    vmManager.getStartupError(id)
-                        ?: "Guest boot failed. The Android 9 desktop was never rendered."
-                } else null""",
+                // Do not clear a timeout error if native code later reports
+                // RUNNING: a process handle is NOT evidence of guest video.
+                if (status == VMStatus.ERROR) {
+                    bootError = vmManager.getStartupError(id)
+                        ?: "Android 9 runtime failed to start."
+                } else if (status == VMStatus.STOPPED && bootError == null) {
+                    bootError = "Android 9 guest stopped before any display was verified."
+                }""",
     "Display viewmodel collection")
 s=replace_once(s,
     """        instanceId = null
@@ -93,11 +97,16 @@ s=replace_once(s,
             // A VM process can exist while Android init / the guest display
             // never actually starts. Detect this and avoid a forever-black UI.
             delay(20_000L)
-            if (bootError == null && vmManager.getFramebufferFd(id) < 0) {
-                bootError = "No Android framebuffer after 20 seconds. " +
-                    "The guest OS has not produced a display. This is not " +
-                    "a minimal Android desktop; apps cannot open until " +
-                    "the container runtime, Binder and graphics work."
+            if (bootError == null) {
+                // Even a valid /dev/graphics/fb0 fd can contain only zeros.
+                // There is currently no verified frame-presentation callback.
+                bootError = "After 20 seconds VineOS still cannot confirm a " +
+                    "working Android 9 desktop. This black view is only the " +
+                    "VineOS display surface, not an Android launcher. " +
+                    "On an unrooted HyperOS device the native VM engine " +
+                    "usually cannot access loop devices or mount a guest " +
+                    "filesystem (CAP_SYS_ADMIN required). Aurora Store, " +
+                    "Magisk and Shizuku APKs cannot fix guest boot."
             }
         }
         statusJob = viewModelScope.launch {""",
@@ -135,7 +144,7 @@ replacement="""        // A black SurfaceView is NOT a minimal Android desktop.
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 Text(
-                    "Android 9 did not boot",
+                    "Android 9 display not verified",
                     style = MaterialTheme.typography.titleLarge,
                     color = Color.White,
                 )
@@ -154,4 +163,4 @@ replacement="""        // A black SurfaceView is NOT a minimal Android desktop.
         if (vm.isBooting) {"""
 s=replace_once(s,marker,replacement,"Display UI error overlay")
 ui.write_text(s,encoding="utf-8")
-print("VineOS guest boot failure overlay installed")
+print("VineOS watchdog fixed: no false success from framebuffer fd; persistent guest boot diagnostics")
