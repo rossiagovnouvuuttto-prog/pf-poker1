@@ -140,7 +140,7 @@ manager.write_text(manager_text, encoding="utf-8")
 gradle = project / "app/build.gradle.kts"
 gradle_text = gradle.read_text(encoding="utf-8")
 old_suffix = 'applicationIdSuffix = ".debug"'
-new_suffix = 'applicationIdSuffix = ".debug.fgsfix.diag"'
+new_suffix = 'applicationIdSuffix = ".debug.fgsfix.diag2"'
 if gradle_text.count(old_suffix) != 1:
     raise RuntimeError("Unexpected upstream debug applicationIdSuffix")
 gradle.write_text(gradle_text.replace(old_suffix, new_suffix), encoding="utf-8")
@@ -151,7 +151,7 @@ if strings_text.count('<string name="app_name">VineOS</string>') != 1:
 strings_file.write_text(
     strings_text.replace(
         '<string name="app_name">VineOS</string>',
-        '<string name="app_name">VineOS Diagnostics (test)</string>'
+        '<string name="app_name">VineOS Diagnostics 2</string>'
     ), encoding="utf-8"
 )
 
