@@ -46,6 +46,9 @@ jobs:
       - name: Apply Android 9 image provisioning patch
         run: python3 scripts/patch-upstream.py --project upstream
 
+      - name: Add VM boot status diagnostics
+        run: python3 scripts/patch-boot-status.py --project upstream
+
       - name: Build signed debug APK
         working-directory: upstream
         shell: bash
