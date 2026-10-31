@@ -105,7 +105,7 @@ class RootlessQemuEngine(private val context: Context) {
                     "-m", config.ramMb.toString(),
                     "-kernel", kernel.absolutePath,
                     "-initrd", initramfs.absolutePath,
-                    "-append", "console=ttyAMA0",
+                    "-append", "console=ttyAMA0 rdinit=/init",
                     "-display", "none",
                     "-serial", "file:${bootLog.absolutePath}",
                     "-monitor", "none",
