@@ -1,0 +1,111 @@
+name: Android 9 guest GPU driver — rebuild ARM64 virtio DRM kernel
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/android9-virtio-drm-kernel.yml"
+      - "scripts/enable-virtio-drm-podroid.sh"
+      - "rootless-qemu/build-alpine-initramfs.sh"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  guest-drm-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 55
+    steps:
+      - name: Checkout our GPU kernel patch and Linux smoke probe
+        uses: actions/checkout@v4
+      - name: Checkout pinned Podroid kernel source and Dockerfile
+        uses: actions/checkout@v4
+        with:
+          repository: ExTV/Podroid
+          ref: ce0121896b2895637ab1f656cbb0d75fa2874489
+          path: podroid
+          persist-credentials: false
+      - name: Enable DRM virtio GPU and input drivers in the guest kernel
+        run: bash scripts/enable-virtio-drm-podroid.sh podroid
+      - name: Build Linux ARM64 kernel with built-in virtio DRM
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build \
+            --target kernel-builder \
+            --build-arg KERNEL_VERSION=7.1.5 \
+            -f podroid/Dockerfile \
+            -t vineos-android9-virtio-gpu-kernel \
+            podroid
+          cid="$(docker create vineos-android9-virtio-gpu-kernel)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p gpu-kernel
+          docker cp "$cid:/output/vmlinuz-virt" gpu-kernel/kernel
+          docker cp "$cid:/build/linux-7.1.5/.config" gpu-kernel/config
+          grep -x 'CONFIG_DRM=y' gpu-kernel/config
+          grep -x 'CONFIG_DRM_VIRTIO_GPU=y' gpu-kernel/config
+          grep -x 'CONFIG_DMA_SHARED_BUFFER=y' gpu-kernel/config
+          file gpu-kernel/kernel
+          sha256sum gpu-kernel/kernel
+      - name: Install QEMU ARM64 and Alpine initramfs tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm cpio
+      - name: Build real ARM64 userspace to inspect guest DRM device
+        shell: bash
+        run: bash rootless-qemu/build-alpine-initramfs.sh "$PWD/gpu-kernel/initramfs"
+      - name: Verify guest detects virtio DRM card
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd gpu-kernel
+          qemu-system-aarch64 \
+            -machine virt \
+            -accel tcg,thread=multi \
+            -cpu cortex-a57 \
+            -smp 2 \
+            -m 1024 \
+            -kernel kernel \
+            -initrd initramfs \
+            -append "console=ttyAMA0 rdinit=/init" \
+            -device virtio-gpu-pci \
+            -display none \
+            -serial stdio \
+            -monitor none \
+            -nic none \
+            -no-reboot </dev/null >serial.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 100); do
+            if grep -q 'VINEOS_QEMU_DRM_CARD_READY' serial.log; then
+              ready=1
+              break
+            fi
+            if grep -q 'VINEOS_QEMU_DRM_CARD_MISSING' serial.log; then
+              break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          echo "Actual ARM64 QEMU guest DRM evidence:"
+          grep -Ei 'virtio_gpu|virtio.gpu|drm|VINEOS_ALPINE' serial.log | tail -55 || true
+          if [ "$ready" -ne 1 ]; then
+            echo "::error::ARM64 Linux guest still has no /sys/class/drm/card0"
+            exit 1
+          fi
+          echo "PASS: compiled guest kernel exposes real DRM card via virtio GPU."
+          echo "NOTE: Android 9 hwcomposer, home screen, ROOT and game graphics remain unverified."
+      - name: Upload built kernel, config and real serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-arm64-virtio-drm-kernel-and-evidence
+          path: |
+            gpu-kernel/kernel
+            gpu-kernel/config
+            gpu-kernel/serial.log
+          if-no-files-found: ignore
+          retention-days: 14
+          compression-level: 6
