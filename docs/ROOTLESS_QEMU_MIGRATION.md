@@ -54,3 +54,42 @@ much harder problem. We must never label QEMU kernel boot as
 Android Virtualization Framework is a poor general fallback here: its
 Java APIs require `MANAGE_VIRTUAL_MACHINE` and support Microdroid VMs,
 not an arbitrary Android 9 graphics guest available to a normal APK.
+
+
+## Android 9 ARM64 early-boot breakthrough (October 31, 2026)
+
+The GitHub Actions run
+[Android 9 QEMU early boot attempt](../../actions/runs/41239685278)
+did the following **in a genuine rootless QEMU VM**:
+
+1. Downloaded the real ARM64 Redroid 9.0.0 filesystem (~1.5 GiB
+   uncompressed, with an ELF `/init` and API level 28).
+2. Copied it into a virtio-attached ext4 disk.
+3. Booted the Podroid ARM64 Linux 7.1.5 kernel in QEMU/TCG; the kernel
+   successfully mounts BinderFS (binder-control works), but has no
+   legacy `/dev/ashmem`.
+4. Ran the `rootless-qemu/build-redroid9-stage0.sh` stage-0 loader,
+   verified `/system/build.prop` was API28, and executed
+   `switch_root /android /init`.
+5. **Confirmed actual Android9 init** logged `init first stage started!`,
+   `init second stage started!`, parsed `/init.rc`, then started services
+   including `hwservicemanager`, `logd`, `gatekeeperd`, and vendor
+   graphics service attempts.
+
+**NOT a complete boot:** after 150 seconds several services were still
+crashing and restarting. In the serial log, `logd` exits with status 255,
+`vendor.gatekeeper-1-0` receives SIGABRT, and Android
+`hwservicemanager` cannot find a graphics composer 2.1 interface. No
+`sys.boot_completed=1`, Android home screen, Magisk/su privileges for
+apps, touch interface, OpenGL or Standoff 2 was verified.
+
+The complete serial boot log is stored as a GitHub Actions artifact:
+[early boot log](../../actions/runs/41239685278).
+
+A separate **Android 9 QEMU Early Boot APK** workflow builds an opt-in
+*console-only* test that uses a user-selected `.vrom` archive from the
+tablet's Downloads folder:
+[APK workflow](../../actions/workflows/build-android9-qemu-apk.yml).
+This tests whether the same real Android init process can run on the tablet,
+not whether Android is usable yet. The user should not install Magisk or
+other APKs into this early-boot guest.
