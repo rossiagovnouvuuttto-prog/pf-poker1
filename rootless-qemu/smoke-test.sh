@@ -17,10 +17,9 @@ test "$(stat -c '%s' kernel)" -gt 1000000
 test "$(stat -c '%s' initramfs)" -gt 1000000
 command -v qemu-system-aarch64
 
-# No sudo, no host root. Timeout means the guest continued running and is
-# normal for a VM waiting at a login/shell prompt. Capture the serial trace.
-set +e
-timeout 130s qemu-system-aarch64 \
+# No sudo, no host root. Stop as soon as we see a real booted kernel
+# rather than waiting the entire timeout on a login prompt.
+qemu-system-aarch64 \
     -machine virt \
     -accel tcg,thread=multi \
     -cpu cortex-a57 \
@@ -32,16 +31,31 @@ timeout 130s qemu-system-aarch64 \
     -display none \
     -serial stdio \
     -monitor none \
-    -nic user,model=virtio-net-pci \
-    -no-reboot < /dev/null > serial.log 2>&1
-exitcode=$?
-set -e
+    -nic none \
+    -no-reboot < /dev/null > serial.log 2>&1 &
+pid=$!
+cleanup() {
+    kill "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+}
+trap cleanup EXIT
+booted=0
+for i in $(seq 1 100); do
+    if grep -Eq 'Linux version|Booting Linux|Welcome to Alpine' serial.log; then
+        booted=1
+        break
+    fi
+    if ! kill -0 "$pid" 2>/dev/null; then
+        echo "QEMU exited unexpectedly before Linux startup" >&2
+        break
+    fi
+    sleep 1
+done
 
-if ! grep -Eq 'Linux version|Booting Linux|Welcome to Alpine' serial.log; then
-    echo "QEMU failed to reach Linux kernel, process exit code: $exitcode" >&2
+if [[ "$booted" -ne 1 ]]; then
     tail -100 serial.log >&2
     exit 1
 fi
-echo "PASS: real ARM64 Linux kernel booted under rootless QEMU/TCG"
+echo "PASS: real ARM64 Linux kernel started under rootless QEMU/TCG"
 grep -E 'Linux version|Booting Linux|Welcome to Alpine' serial.log | head -5
 echo "NOTE: this does not demonstrate Android 9 boot or GPU acceleration"
