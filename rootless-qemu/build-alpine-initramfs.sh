@@ -36,6 +36,13 @@ export PATH=/bin:/sbin:/usr/bin:/usr/sbin
 mount -t devtmpfs devtmpfs /dev 2>/dev/null || true
 mount -t proc proc /proc 2>/dev/null || true
 mount -t sysfs sysfs /sys 2>/dev/null || true
+# This checks a *guest* DRM device. A framebuffer on the QEMU host alone is
+# NOT proof that the Android guest has a working GPU driver.
+if [ -e /sys/class/drm/card0 ]; then
+  echo "VINEOS_QEMU_DRM_CARD_READY" >/dev/console
+else
+  echo "VINEOS_QEMU_DRM_CARD_MISSING" >/dev/console
+fi
 echo "VINEOS_ALPINE_USERLAND_READY arch=$(uname -m) release=$(cat /etc/alpine-release)" >/dev/console
 echo "Alpine Linux is running inside rootless QEMU without a host ROOT request." >/dev/console
 echo "This is a Linux test, NOT an Android 9 VM or functional guest Magisk." >/dev/console
