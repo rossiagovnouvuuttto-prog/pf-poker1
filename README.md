@@ -73,3 +73,29 @@ the previously empty VineOS ROM list.
 For an already-provided, complete and trusted Android 9 ARM64 rootfs,
 use `rom-tools/pack_android9_vrom.py` or the manual
 `Validate and package Android 9 ROM` workflow with an HTTPS URL and SHA-256.
+
+
+## Android 16 foreground-service crash fix
+
+User crash log from Redmi Pad 2 Pro / HyperOS 3:
+`android.app.RemoteServiceException$ForegroundServiceDidNotStartInTimeException`.
+This means `Context.startForegroundService()` was called, but Android did
+not observe a sufficiently prompt `Service.startForeground()`.
+
+Our experimental patch:
+- Promotes `VineService` from `onCreate()` instead of only from `onStartCommand()`.
+- Adds a foreground-ready signal and waits (with a short timeout)
+  before starting the VM's native container runtime.
+- Publishes a separate debug APK named `VineOS Fix (test)` from
+  [Build VineOS APK](../../actions/workflows/build-vineos.yml).
+- Installs next to the existing debug build using a different package name,
+  because ephemeral GitHub debug signing keys cannot safely update older builds.
+
+To test: download the public `VineOS-Fix-Android16-test.apk` from the
+latest successful APK workflow **GitHub Release**, install it without
+uninstalling the original VineOS, then import the `.vrom` from the tablet's
+`Download` folder again into the *new* app.
+
+A successful CI compile is **not** proof that the crash is fixed on-device.
+The guest VM will still need privileges and a working Android 9 runtime.
+If it crashes, read the next exception from the HyperOS error report.
