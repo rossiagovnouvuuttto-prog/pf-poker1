@@ -95,7 +95,18 @@ jobs:
                   im=Image.open(p).convert('RGB')
                   stats=ImageStat.Stat(im.resize((256,256)))
                   print(f"ACTUAL_FRAME size={im.size} rgb_stddev={stats.stddev}")
-                  print("NONBLACK_FRAME" if sum(stats.stddev)>6 else "BLACK_OR_BLANK_FRAME")
+                  pix=list(im.resize((256,256)).getdata())
+                  dark=sum(1 for p in pix if max(p)<15)/len(pix)
+                  color=sum(1 for p in pix if max(p)-min(p)>20)/len(pix)
+                  # QEMU's own text 'Display output is not active.' is black
+                  # with a few gray glyphs. It is NOT a SurfaceFlinger frame.
+                  # A nonblack screen or QEMU VNC output is never proof of a
+                  # working Android9 launcher without boot_completed.
+                  print(f"dark_fraction={dark:.4f} color_fraction={color:.4f}")
+                  if dark>0.99 and color<0.001:
+                      print("DISPLAY_INACTIVE_PLACEHOLDER_OR_BLANK_SCREEN")
+                  else:
+                      print("FRAME_CONTENT_PRESENT_NOT_VERIFIED_AS_ANDROID9")
                   im.save('guest-gpu.png')
               except Exception as e:
                   print(f"GRAPHIC_FRAME_DECODE_FAILED: {e}")
