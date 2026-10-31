@@ -3,7 +3,6 @@ package com.hexadecinull.vineos.domain
 import android.content.Context
 import android.util.Log
 import java.io.File
-import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -52,10 +51,10 @@ class RootlessQemuEngine(private val context: Context) {
                 }
                 val kernel = File(privateBootDir, "kernel")
                 val initramfs = File(privateBootDir, "initramfs")
-                require(kernel.isFile && kernel.length() in 1024..(128L * 1024 * 1024)) {
+                require(kernel.isFile && kernel.length() >= 1024L && kernel.length() <= (128L * 1024 * 1024)) {
                     "Missing or invalid ARM64 guest kernel"
                 }
-                require(initramfs.isFile && initramfs.length() in 1024..(256L * 1024 * 1024)) {
+                require(initramfs.isFile && initramfs.length() >= 1024L && initramfs.length() <= (256L * 1024 * 1024)) {
                     "Missing or invalid ARM64 initramfs"
                 }
                 val bootLog = File(privateBootDir, "qemu-serial.log")
@@ -72,7 +71,7 @@ class RootlessQemuEngine(private val context: Context) {
                     "-kernel", kernel.absolutePath,
                     "-initrd", initramfs.absolutePath,
                     "-append", "console=ttyAMA0",
-                    "-nographic",
+                    "-display", "none",
                     "-serial", "file:${bootLog.absolutePath}",
                     "-monitor", "none",
                     "-nic", "user,model=virtio-net-pci",
@@ -86,7 +85,7 @@ class RootlessQemuEngine(private val context: Context) {
                 pb.environment()["LD_LIBRARY_PATH"] = context.applicationInfo.nativeLibraryDir
                 val p = pb.start()
                 child = p
-                Log.i("VineOS-QEMU", "Started experimental software-emulation PID ${p.pid()}")
+                Log.i("VineOS-QEMU", "Started experimental software-emulation process")
                 bootLog
             }
         }
