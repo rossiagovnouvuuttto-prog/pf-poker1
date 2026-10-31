@@ -9,6 +9,7 @@ on:
       - "scripts/patch-upstream.py"
       - "scripts/patch-boot-status.py"
       - "overrides/**"
+      - "rootless-qemu/**"
   workflow_dispatch:
 
 permissions:
@@ -66,15 +67,17 @@ jobs:
           mkdir -p upstream/app/src/main/assets/licenses
           cp docs/ROOTLESS_QEMU_MIGRATION.md upstream/app/src/main/assets/licenses/ROOTLESS_QEMU_MIGRATION.txt
 
-      - name: Bundle real ARM64 Linux kernel and initramfs (Linux-only smoke test)
+      - name: Bundle real ARM64 Linux kernel and self-contained Alpine userspace (Linux-only smoke test)
         shell: bash
         run: |
           set -euo pipefail
           BASE="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/netboot"
           curl -fL --retry 5 --retry-all-errors "${BASE}/vmlinuz-virt" \
             -o upstream/app/src/main/assets/qemu-linux-test/kernel
-          curl -fL --retry 5 --retry-all-errors "${BASE}/initramfs-virt" \
-            -o upstream/app/src/main/assets/qemu-linux-test/initramfs
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cpio
+          bash rootless-qemu/build-alpine-initramfs.sh \
+            upstream/app/src/main/assets/qemu-linux-test/initramfs
           du -h upstream/app/src/main/assets/qemu-linux-test/*
           sha256sum upstream/app/src/main/assets/qemu-linux-test/*
           test "$(stat -c %s upstream/app/src/main/assets/qemu-linux-test/kernel)" -gt 1000000
