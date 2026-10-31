@@ -1,0 +1,101 @@
+name: Android 9 ARM64 QEMU readiness probe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rootless-qemu/build-android9-binder-probe.sh"
+      - ".github/workflows/android9-qemu-readiness.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  binder-probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU and initramfs tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm cpio
+      - name: Download verifiable Podroid ARM64 kernel with Binder support
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors \
+            "https://github.com/ExTV/Podroid/releases/download/v1.2.9/Podroid-v1.2.9-release.apk" -o podroid.apk
+          echo "3945c8c887f1df239501de6320fe5c8315bf9805029f530373d3244fee0d2a5f  podroid.apk" | sha256sum -c -
+          echo "Checking bundled kernel entries:"
+          unzip -Z1 podroid.apk | grep -Ei '(vmlinuz|kernel|initrd)' | head -30
+          mkdir -p rootless-qemu/out-android9
+          unzip -p podroid.apk assets/vmlinuz-virt >rootless-qemu/out-android9/kernel
+          test "$(stat -c %s rootless-qemu/out-android9/kernel)" -gt 2000000
+          sha256sum rootless-qemu/out-android9/kernel
+          rm podroid.apk
+      - name: Create Android compatibility probe ramdisk
+        run: bash rootless-qemu/build-android9-binder-probe.sh "$PWD/rootless-qemu/out-android9/initramfs"
+      - name: Boot QEMU and check actual Binder support
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd rootless-qemu/out-android9
+          qemu-system-aarch64 \
+            -machine virt -accel tcg,thread=multi -cpu cortex-a57 -smp 2 -m 1024 \
+            -kernel kernel -initrd initramfs \
+            -append "console=ttyAMA0 rdinit=/init" \
+            -display none -serial stdio -monitor none -nic none -no-reboot \
+            </dev/null >serial.log 2>&1 &
+          pid=$!
+          trap 'kill "$pid" 2>/dev/null || true; wait "$pid" 2>/dev/null || true' EXIT
+          ready=0
+          for i in $(seq 1 100); do
+            if grep -q "ANDROID9_QEMU_KERNEL_PROBE_DONE" serial.log; then
+              ready=1; break
+            fi
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 1
+          done
+          grep -E "ANDROID9_QEMU_(KERNEL|BINDER|ASHMEM)" serial.log || true
+          test "$ready" -eq 1 || { echo "Guest did not reach kernel diagnostic init"; tail -100 serial.log; exit 1; }
+          grep -q "ANDROID9_QEMU_BINDER_READY" serial.log || {
+            echo "::error::Kernel booted but Binder unavailable. Android 9 cannot yet be started."
+            exit 1
+          }
+          echo "Binder support confirmed in a real software-emulated ARM64 VM."
+      - name: Save diagnostic serial log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-qemu-binder-serial
+          path: rootless-qemu/out-android9/serial.log
+          if-no-files-found: ignore
+
+  android9-rootfs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify real Redroid Android 9 ARM64 container filesystem
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 redroid/redroid:9.0.0-latest
+          cid="$(docker create --platform linux/arm64 redroid/redroid:9.0.0-latest)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p android9
+          docker export "$cid" | sudo tar -xf - -C android9
+          sudo test -e android9/init
+          sudo test -f android9/system/build.prop
+          sudo grep -q '^ro.build.version.sdk=28$' android9/system/build.prop
+          echo "Confirmed real Android 9 (API 28) userspace, ARM64 container image."
+          echo "Init binary:"
+          sudo stat -Lc '%n %F %s bytes' android9/init
+          sudo file -L android9/init || true
+          echo "Memory and filesystem:"
+          sudo du -sh android9
+          echo "Android OS fingerprint:"
+          sudo grep -E '^(ro.build.version.release|ro.build.version.sdk|ro.product.cpu.abi)=' android9/system/build.prop || true
+          echo "CAUTION: This validates ROM files, NOT a bootable QEMU VM."
