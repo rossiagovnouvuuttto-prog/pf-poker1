@@ -40,7 +40,7 @@ class RootlessAndroid9QemuEngine(private val context: Context) {
             check(base.isDirectory || base.mkdirs()) { "Cannot create Android9 VM storage" }
 
             stageAsset("qemu-android9/kernel", File(base, "kernel"), 2_000_000)
-            stageAsset("qemu-android9/stage0.cpio.gz", File(base, "stage0.cpio.gz"), 1_000_000)
+            stageAsset("qemu-android9/stage0.img", File(base, "stage0.img"), 1_000_000)
 
             val archive = File(base, "android9-import.vrom.part")
             val disk = File(base, "android9-rootfs.img")
@@ -122,7 +122,7 @@ class RootlessAndroid9QemuEngine(private val context: Context) {
                 "-smp", "2",
                 "-m", "2048",
                 "-kernel", File(base, "kernel").absolutePath,
-                "-initrd", File(base, "stage0.cpio.gz").absolutePath,
+                "-initrd", File(base, "stage0.img").absolutePath,
                 "-append", "console=ttyAMA0 rdinit=/init androidboot.hardware=redroid androidboot.selinux=permissive selinux=0",
                 "-drive", "if=none,file=${disk.absolutePath},format=raw,id=androiddisk",
                 "-device", "virtio-blk-device,drive=androiddisk",
