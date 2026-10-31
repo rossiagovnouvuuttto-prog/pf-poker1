@@ -1,0 +1,102 @@
+name: Android 9 QEMU early boot attempt (Redroid)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "rootless-qemu/build-redroid9-stage0.sh"
+      - ".github/workflows/android9-qemu-early-boot.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  qemu-android9:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install QEMU / ext4 / initramfs tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-arm cpio e2fsprogs
+      - name: Obtain the ARM64 Android-capable Podroid kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 4 --retry-all-errors \
+            "https://github.com/ExTV/Podroid/releases/download/v1.2.9/Podroid-v1.2.9-release.apk" -o podroid.apk
+          echo "3945c8c887f1df239501de6320fe5c8315bf9805029f530373d3244fee0d2a5f  podroid.apk" | sha256sum -c -
+          mkdir -p android9-boot
+          unzip -p podroid.apk assets/vmlinuz-virt >android9-boot/kernel
+          test "$(stat -c %s android9-boot/kernel)" -gt 2000000
+          rm podroid.apk
+      - name: Download actual Android 9 arm64 filesystem and prepare virtio disk
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull --platform linux/arm64 redroid/redroid:9.0.0-latest
+          cid="$(docker create --platform linux/arm64 redroid/redroid:9.0.0-latest)"
+          trap 'docker rm -f "$cid" >/dev/null 2>&1 || true' EXIT
+          mkdir -p android9-source
+          docker export "$cid" | sudo tar --numeric-owner -xf - -C android9-source
+          sudo grep -q '^ro.build.version.sdk=28$' android9-source/system/build.prop
+          sudo file -L android9-source/init
+          sudo test -x android9-source/init
+          du_kib="$(sudo du -sk android9-source | cut -f1)"
+          disk_mib="$(( du_kib / 1024 + 850 ))"
+          echo "Android 9 rootfs source bytes: $(sudo du -sb android9-source | cut -f1)"
+          echo "Guest ext4 disk size: ${disk_mib} MiB"
+          if [ "$disk_mib" -gt 5000 ]; then echo "Rootfs too large for CI"; exit 1; fi
+          truncate -s "${disk_mib}M" android9-boot/android9-rootfs.img
+          sudo mke2fs -q -t ext4 -F -d android9-source android9-boot/android9-rootfs.img
+          sudo chown "$(id -u):$(id -g)" android9-boot/android9-rootfs.img
+          sudo rm -rf android9-source
+          sudo e2fsck -n android9-boot/android9-rootfs.img || true
+          echo "Prepared real Android 9 system disk for QEMU virtio."
+      - name: Build ARM64 Stage-0 that hands PID 1 to Android 9 init
+        run: |
+          bash rootless-qemu/build-redroid9-stage0.sh "$PWD/android9-boot/stage0.cpio.gz"
+      - name: Attempt actual Android 9 init in rootless ARM64 QEMU
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd android9-boot
+          set +e
+          timeout --signal=TERM --kill-after=3 150s qemu-system-aarch64 \
+            -machine virt -accel tcg,thread=multi -cpu cortex-a57 -smp 2 -m 2048 \
+            -kernel kernel -initrd stage0.cpio.gz \
+            -append "console=ttyAMA0 rdinit=/init androidboot.hardware=redroid androidboot.selinux=permissive selinux=0" \
+            -drive if=none,file=android9-rootfs.img,format=raw,id=androiddisk \
+            -device virtio-blk-device,drive=androiddisk \
+            -display none -serial stdio -monitor none -nic none -no-reboot \
+            </dev/null >serial.log 2>&1
+          code=$?
+          set -e
+          echo "QEMU exit code: $code"
+          grep -E 'ANDROID9_STAGE0_|init:|init first|Kernel panic|Unable to mount|Failed to mount|binder' serial.log | tail -65 || true
+          if ! grep -q 'ANDROID9_STAGE0_VERIFIED_ANDROID9_API28' serial.log; then
+            echo "::error::Android 9 virtio rootfs could not be mounted or checked"
+            tail -80 serial.log
+            exit 1
+          fi
+          if ! grep -q 'ANDROID9_STAGE0_HANDOFF_TO_ACTUAL_INIT' serial.log; then
+            echo "::error::Guest failed before handing PID 1 to Android 9"
+            tail -80 serial.log
+            exit 1
+          fi
+          if grep -Eq 'sys.boot_completed=1|ANDROID9_GUEST_BOOT_COMPLETED' serial.log; then
+            echo "Android9 OS boot completion marker observed."
+          else
+            echo "::warning::Android9 init handoff attempted. Full guest OS boot and GUI NOT verified."
+          fi
+          echo "PASS: Real Android9 API28 filesystem was mounted and /init execution was attempted."
+      - name: Upload actual Android 9 QEMU boot log, not a fake VM
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redroid9-virtio-qemu-early-boot-log
+          path: android9-boot/serial.log
+          if-no-files-found: ignore
+          retention-days: 14
