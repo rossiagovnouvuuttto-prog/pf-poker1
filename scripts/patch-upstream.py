@@ -17,6 +17,15 @@ target = project / "app/src/main/java/com/hexadecinull/vineos/domain/GuestImageP
 target.parent.mkdir(parents=True, exist_ok=True)
 shutil.copyfile(source, target)
 
+# Software-emulated ARM64 backend. It never uses namespace/mount privileges.
+# Compiled into the app but intentionally not selectable until a QEMU binary,
+# Android 9 boot bundle and working graphical transport are integrated.
+qemu_source = Path(
+    "overrides/app/src/main/java/com/hexadecinull/vineos/domain/RootlessQemuEngine.kt"
+)
+qemu_target = project / "app/src/main/java/com/hexadecinull/vineos/domain/RootlessQemuEngine.kt"
+shutil.copyfile(qemu_source, qemu_target)
+
 # Foreground-service fix for Android 16 / HyperOS 3.
 service_source = Path(
     "overrides/app/src/main/java/com/hexadecinull/vineos/service/VineService.kt"
