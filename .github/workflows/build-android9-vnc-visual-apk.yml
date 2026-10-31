@@ -1,0 +1,182 @@
+name: Build Android 9 QEMU VNC video prototype APK
+
+on:
+  workflow_run:
+    workflows:
+      - "Build Android ARM64 QEMU with VNC framebuffer"
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  build:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout our experimental VineOS patches
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned VineOS base project
+        uses: actions/checkout@v4
+        with:
+          repository: Hexadecinull/VineOS
+          ref: e2b1f47dea86969579b6469f74fad2d0b36edad2
+          path: upstream
+          persist-credentials: false
+
+      - name: Install Java 17 and Android SDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v4
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager --install "platforms;android-37.1" "cmake;3.22.1"
+
+      - name: Fetch verified ARM64 QEMU binary from Podroid GPL release
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fL --retry 5 --retry-all-errors --retry-delay 3 \
+            "https://github.com/ExTV/Podroid/releases/download/v1.2.9/Podroid-v1.2.9-release.apk" \
+            -o podroid-source-release.apk
+          echo "3945c8c887f1df239501de6320fe5c8315bf9805029f530373d3244fee0d2a5f  podroid-source-release.apk" | sha256sum -c -
+          mkdir -p upstream/app/src/main/jniLibs/arm64-v8a
+          unzip -Z1 podroid-source-release.apk | grep '^lib/arm64-v8a/lib' | sort > available-arm64-libs.txt
+          cat available-arm64-libs.txt
+          unzip -jo podroid-source-release.apk \
+            "lib/arm64-v8a/libqemu-system-aarch64.so" \
+            "lib/arm64-v8a/libslirp.so" \
+            -d upstream/app/src/main/jniLibs/arm64-v8a
+          test -s upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so
+          readelf -h upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so | head -20
+          readelf -d upstream/app/src/main/jniLibs/arm64-v8a/libqemu-system-aarch64.so | grep NEEDED || true
+          mkdir -p upstream/app/src/main/assets/qemu-android9
+          unzip -p podroid-source-release.apk assets/vmlinuz-virt \
+            > upstream/app/src/main/assets/qemu-android9/kernel
+          test "$(stat -c %s upstream/app/src/main/assets/qemu-android9/kernel)" -gt 2000000
+          rm podroid-source-release.apk
+          mkdir -p upstream/app/src/main/assets/qemu-linux-test
+          mkdir -p upstream/app/src/main/assets/licenses
+          cp docs/ROOTLESS_QEMU_MIGRATION.md upstream/app/src/main/assets/licenses/ROOTLESS_QEMU_MIGRATION.txt
+
+      - name: Download compiled ARM64 guest kernel with real virtio DRM driver
+        uses: actions/download-artifact@v4
+        with:
+          name: android9-arm64-virtio-drm-kernel-and-evidence
+          run-id: 41245676886
+          github-token: ${{ github.token }}
+          path: gpu-kernel
+
+      - name: Download Android ARM64 VNC-enabled QEMU binary (source built)
+        uses: actions/download-artifact@v4
+        with:
+          name: vineos-qemu-arm64-vnc-gpl-binaries
+          run-id: 41246447632
+          github-token: ${{ github.token }}
+          path: qemu-vnc
+
+      - name: Replace stock console-only QEMU with real video-capable QEMU and DRM kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fx 'CONFIG_DRM=y' gpu-kernel/config
+          grep -Fx 'CONFIG_DRM_VIRTIO_GPU=y' gpu-kernel/config
+          grep -Fx 'CONFIG_ANDROID_BINDER_IPC=y' gpu-kernel/config
+          grep -Fq 'VINEOS_QEMU_DRM_CARD_READY' gpu-kernel/serial.log
+          test -s qemu-vnc/libqemu-system-aarch64.so
+          test -s qemu-vnc/libslirp.so
+          file qemu-vnc/*.so gpu-kernel/kernel
+          readelf -h qemu-vnc/libqemu-system-aarch64.so | grep -F AArch64
+          cp qemu-vnc/libqemu-system-aarch64.so upstream/app/src/main/jniLibs/arm64-v8a/
+          cp qemu-vnc/libslirp.so upstream/app/src/main/jniLibs/arm64-v8a/
+          cp gpu-kernel/kernel upstream/app/src/main/assets/qemu-android9/kernel
+          sha256sum upstream/app/src/main/jniLibs/arm64-v8a/*.so
+          sha256sum upstream/app/src/main/assets/qemu-android9/kernel
+          echo "WARNING: this validates VNC binary + DRM device, not Android9 home screen."
+
+      - name: Bundle real ARM64 Linux kernel and self-contained Alpine userspace (Linux-only smoke test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://dl-cdn.alpinelinux.org/alpine/v3.22/releases/aarch64/netboot"
+          curl -fL --retry 5 --retry-all-errors "${BASE}/vmlinuz-virt" \
+            -o upstream/app/src/main/assets/qemu-linux-test/kernel
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq cpio
+          bash rootless-qemu/build-alpine-initramfs.sh \
+            upstream/app/src/main/assets/qemu-linux-test/initramfs
+          du -h upstream/app/src/main/assets/qemu-linux-test/*
+          sha256sum upstream/app/src/main/assets/qemu-linux-test/*
+          test "$(stat -c %s upstream/app/src/main/assets/qemu-linux-test/kernel)" -gt 1000000
+          test "$(stat -c %s upstream/app/src/main/assets/qemu-linux-test/initramfs)" -gt 1000000
+
+      - name: Build Android 9 QEMU stage-0 bootloader (ROM is selected by user)
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash rootless-qemu/build-redroid9-stage0.sh \
+            "$PWD/upstream/app/src/main/assets/qemu-android9/stage0.img"
+          du -h upstream/app/src/main/assets/qemu-android9/*
+          sha256sum upstream/app/src/main/assets/qemu-android9/*
+
+      - name: Apply current VineOS, Android 16, and rootless QEMU patches
+        run: |
+          python3 scripts/patch-upstream.py --project upstream
+          python3 scripts/patch-boot-status.py --project upstream
+          python3 scripts/patch-qemu-demo.py --project upstream
+          python3 scripts/patch-android9-qemu-ui.py --project upstream
+          python3 scripts/patch-android9-vnc-visual.py --project upstream
+
+      - name: Compile Android9 rootless QEMU VNC framebuffer viewer
+        working-directory: upstream
+        shell: bash
+        run: |
+          set -o pipefail
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:assembleDebug --stacktrace 2>&1 | tee ../rootless-build.log
+
+      - name: Verify Android9 QEMU VNC/DRM debug prototype APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="upstream/app/build/outputs/apk/debug/app-debug.apk"
+          test -s "$APK"
+          # Avoid unzip SIGPIPE triggered by grep -q under pipefail.
+          unzip -Z1 "$APK" > apk-entries.txt
+          grep -Fx 'lib/arm64-v8a/libqemu-system-aarch64.so' apk-entries.txt
+          grep -Fx 'assets/qemu-linux-test/kernel' apk-entries.txt
+          grep -Fx 'assets/qemu-linux-test/initramfs' apk-entries.txt
+          grep -Fx 'assets/qemu-android9/kernel' apk-entries.txt
+          grep -Fx 'assets/qemu-android9/stage0.img' apk-entries.txt
+          # The RFB/visual preview classes are now compiled and included in APK DEX.
+          test -s upstream/app/src/main/java/com/hexadecinull/vineos/domain/QemuRfbFrameClient.kt
+          test -s upstream/app/src/main/java/com/hexadecinull/vineos/ui/screens/QemuVncPreview.kt
+          cp "$APK" VineOS-Android9-QEMU-VisualTest.apk
+          ls -lh VineOS-Android9-QEMU-VisualTest.apk
+
+      - name: Upload test APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: VineOS-Android9-QEMU-VisualTest-APK
+          path: VineOS-Android9-QEMU-VisualTest.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
+
+      - name: Upload diagnostic build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android9-qemu-build-log
+          path: rootless-build.log
+          if-no-files-found: ignore
+          retention-days: 7
