@@ -75,7 +75,9 @@ public final class RootOverlay {
         } finally {
             tc.getMethod("close").invoke(transaction);
         }
-        surface = new Surface();
+        Constructor<Surface> surfaceConstructor = Surface.class.getDeclaredConstructor();
+        surfaceConstructor.setAccessible(true);
+        surface = surfaceConstructor.newInstance();
         Method copy = Surface.class.getDeclaredMethod("copyFrom", sc);
         copy.setAccessible(true);
         copy.invoke(surface, control);
